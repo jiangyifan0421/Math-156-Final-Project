@@ -1,0 +1,330 @@
+---
+title: "Math 156 - Fnial"
+author: "Wentao Deng"
+date: "Spring 2024"
+output: 
+  pdf_document: 
+    latex_engine: xelatex
+---
+
+
+```{r setup, include=FALSE}
+library(knitr)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r,warning = FALSE}
+library(reticulate)
+#use_virtualenv("D:/my_document/UCLA/2024-spring/24S-MATH-156-LEC-1/project/env")
+library(tm)
+## Loading required package: NLP
+library(text2vec)
+library(caret)
+library(e1071)
+library(keras)
+library(naivebayes)
+library(stringi)
+library(dplyr)
+library(tidyverse)
+library(SnowballC)
+library(nnet)
+
+```
+
+```{r,include = FALSE}
+library(tensorflow)
+install_tensorflow()
+```
+
+```{r,include = FALSE}
+tf_config()
+```
+
+
+
+```{r}
+# Define the path to the dataset
+path <- "D:/my_document/UCLA/2024-spring/24S-MATH-156-LEC-1/project/bbc" # Replace with the actual path
+
+# Get the list of folders
+folders <- list.files(path, full.names = TRUE)
+
+# Read the text files and create a dataframe
+data <- do.call(rbind, lapply(folders, function(folder) {
+  file_paths <- list.files(folder, full.names = TRUE)
+  if (length(file_paths) == 0) {
+    return(NULL) # Skip empty folders
+  }
+  text <- sapply(file_paths, function(file_path) {
+    # Read the entire file and collapse it into one single string
+    paste(readLines(file_path, warn = FALSE), collapse = " ")
+  })
+  if (length(text) == 0) {
+    return(NULL) # Skip if no text is read
+  }
+  data.frame(text = text, category = basename(folder), stringsAsFactors = FALSE)
+}))
+
+# Check if data is created successfully
+if (is.null(data) || nrow(data) == 0) {
+  stop("No data was read from the files. Please check the file paths and contents.")
+} else {
+  print("Dataframe created successfully.")
+}
+data %>%
+  group_by(category) %>%
+  summarise(count = n())
+
+```
+
+
+```{r}
+# Data Preprocessing
+# Create a text corpus
+corpus <- VCorpus(VectorSource(data$text))
+# Preprocess the corpus
+corpus <- tm_map(corpus, content_transformer(function(x) iconv(x, from = "UTF-8", to = "ASCII", sub = "byte")))
+corpus <- tm_map(corpus, content_transformer(tolower))
+corpus <- tm_map(corpus, removePunctuation)
+corpus <- tm_map(corpus, removeNumbers)
+corpus <- tm_map(corpus, removeWords, stopwords("en"))
+corpus <- tm_map(corpus, stripWhitespace)
+# Feature Extraction: Create a document-term matrix using TF-IDF
+dtm <- DocumentTermMatrix(corpus)
+dtm2 <- removeSparseTerms(dtm, 0.99)
+tfidf <- weightTfIdf(dtm)
+```
+
+```{r}
+set.seed(123)
+# Prepare training and test datasets
+full_data_matrix <- as.matrix(tfidf)
+set <- createDataPartition(data$category, p = 0.8, list = FALSE)
+train_data <- full_data_matrix[set, ]
+test_data <- full_data_matrix[-set, ]
+train_labels <- as.factor(data$category[set])
+test_labels <- as.factor(data$category[-set])
+
+```
+
+```{r}
+# Naive Bayes Model
+model_nb <- naive_bayes(x = as.data.frame(train_data), y = train_labels)
+# Predict using the trained model
+predictions_nb <- predict(model_nb, as.data.frame(test_data))
+# Compute the confusion matrix
+confMat_nb <- confusionMatrix(predictions_nb, test_labels)
+print(confMat_nb)
+```
+
+
+
+
+
+
+```{r,warning = FALSE}
+library(randomForest)
+rf_model <- randomForest(x = train_data, y = train_labels, ntree = 100)
+```
+
+
+```{r,warning = FALSE}
+# Evaluate the model
+predictions <- predict(rf_model, newdata = test_data)
+confusionMatrix(predictions, test_labels)
+```
+
+
+
+```{r,warning = FALSE}
+library(class)
+# Train KNN model
+knn_model <- knn(train = train_data, test = test_data, cl = train_labels, k = 5)
+
+# Evaluate the model
+conf_matrix <- confusionMatrix(knn_model, test_labels)
+print(conf_matrix)
+```
+
+```{r,warning = FALSE}
+library(rpart)
+# Train Decision Tree model
+tree_model <- rpart(train_labels ~ ., data = as.data.frame(train_data), method = "class")
+
+# Predict using the Decision Tree model
+tree_predictions <- predict(tree_model, newdata = as.data.frame(test_data), type = "class")
+
+# Evaluate the Decision Tree model
+tree_conf_matrix <- confusionMatrix(tree_predictions, test_labels)
+print("Decision Tree Confusion Matrix:")
+print(tree_conf_matrix)
+```
+
+```{r,warning = FALSE}
+# Load necessary libraries for Logistic Regression
+library(glmnet)
+
+# Train Logistic Regression model using glmnet
+logistic_model <- cv.glmnet(train_data, train_labels, family = "multinomial", type.multinomial = "grouped", alpha = 0)
+
+# Predict using the Logistic Regression model
+logistic_predictions <- predict(logistic_model, newx = test_data, s = "lambda.min", type = "class")
+
+# Evaluate the Logistic Regression model
+logistic_conf_matrix <- confusionMatrix(as.factor(logistic_predictions), test_labels)
+print("Logistic Regression Confusion Matrix:")
+print(logistic_conf_matrix)
+
+```
+
+```{r,warning = FALSE}
+# Load necessary libraries for Gradient Boosting with xgboost
+library(xgboost)
+
+# Prepare data for xgboost
+train_data_matrix <- xgb.DMatrix(data = train_data, label = as.numeric(train_labels) - 1)
+test_data_matrix <- xgb.DMatrix(data = test_data, label = as.numeric(test_labels) - 1)
+
+# Set parameters for xgboost
+params <- list(
+  booster = "gbtree",
+  objective = "multi:softprob",
+  num_class = length(unique(train_labels)),
+  eval_metric = "mlogloss"
+)
+
+# Train the xgboost model
+set.seed(123)
+xgb_model <- xgb.train(
+  params = params,
+  data = train_data_matrix,
+  nrounds = 100,
+  watchlist = list(train = train_data_matrix, test = test_data_matrix),
+  verbose = 1
+)
+
+# Predict using the xgboost model
+xgb_predictions <- predict(xgb_model, newdata = test_data_matrix)
+xgb_predictions_class <- max.col(matrix(xgb_predictions, ncol = length(unique(train_labels)), byrow = TRUE)) - 1
+
+# Evaluate the xgboost model
+xgb_conf_matrix <- confusionMatrix(as.factor(xgb_predictions_class), as.factor(as.numeric(test_labels) - 1))
+print("Gradient Boosting (xgboost) Confusion Matrix:")
+print(xgb_conf_matrix)
+
+```
+
+```{r,warning = FALSE}
+# Load necessary libraries for LightGBM
+library(lightgbm)
+
+# Prepare data for LightGBM
+train_data_lgb <- lgb.Dataset(data = train_data, label = as.numeric(train_labels) - 1)
+test_data_lgb <- lgb.Dataset(data = test_data, label = as.numeric(test_labels) - 1, free_raw_data = FALSE)
+
+# Set parameters for LightGBM
+params <- list(
+  objective = "multiclass",
+  num_class = length(unique(train_labels)),
+  metric = "multi_logloss"
+)
+
+# Train the LightGBM model
+set.seed(123)
+lgb_model <- lgb.train(
+  params = params,
+  data = train_data_lgb,
+  nrounds = 100,
+  valids = list(test = test_data_lgb),
+  verbose = 1
+)
+
+# Predict using the LightGBM model
+lgb_predictions <- predict(lgb_model, test_data)
+lgb_predictions_class <- max.col(matrix(lgb_predictions, ncol = length(unique(train_labels)), byrow = TRUE)) - 1
+
+# Evaluate the LightGBM model
+lgb_conf_matrix <- confusionMatrix(as.factor(lgb_predictions_class), as.factor(as.numeric(test_labels) - 1))
+print("LightGBM Confusion Matrix:")
+print(lgb_conf_matrix)
+
+```
+
+```{r,warning = FALSE}
+# SVM Model
+dtm_svm <- dtm
+dtm_svm <- DocumentTermMatrix(corpus, control = list(
+  weighting = weightTfIdf,
+  stopwords = TRUE,
+  bounds = list(global = c(5, Inf), # Terms must appear in at least 5 documents
+  dictionary = setdiff(Terms(dtm_svm), "portrayed")) # Exclude "portrayed"
+))
+# Convert the document-term matrix to a matrix
+full_matrix <- as.matrix(dtm_svm)
+# Split the data into training and testing sets
+set <- createDataPartition(data$category, p = 0.8, list = FALSE)
+train_data <- full_matrix[set, ]
+test_data <- full_matrix[-set, ]
+# Ensure target variable is correctly set
+train_labels <- data$category[set]
+test_labels <- data$category[-set]
+
+# Train SVM model
+model_svm <- svm(train_data, as.factor(train_labels), kernel = "linear")
+```
+
+
+
+```{r}
+# Predict using the trained model
+predictions_svm <- predict(model_svm, test_data)
+# Calculate the confusion matrix
+confMat_svm <- confusionMatrix(as.factor(predictions_svm), as.factor(test_labels))
+print(confMat_svm)
+```
+
+
+
+
+
+
+# 废弃代码
+
+```{r,eval=FALSE, include = FALSE}
+# 神经网络模型
+set.seed(123)
+nn_model <- nnet(train_data, class.ind(train_labels), size = 3, rang = 0.1, decay = 5e-4, maxit = 200)
+# 使用训练好的模型进行预测
+nn_pred <- predict(nn_model, test_data, type = "class")
+# 计算混淆矩阵
+confMat_nn <- confusionMatrix(max.col(nn_pred), max.col(class.ind(test_labels)))
+print(confMat_nn)
+```
+
+```{r,eval=FALSE, include = FALSE}
+# 定义模型
+model <- keras_model_sequential() %>%
+  layer_dense(units = 128, activation = 'relu', input_shape = ncol(x_train)) %>%
+  layer_dropout(rate = 0.4) %>%
+  layer_dense(units = 64, activation = 'relu') %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = length(unique(train_labels)), activation = 'softmax')
+
+# 编译模型
+model %>% compile(
+  loss = 'categorical_crossentropy',
+  optimizer = optimizer_rmsprop(),
+  metrics = c('accuracy')
+)
+
+# 训练模型
+history <- model %>% fit(
+  x_train, y_train,
+  epochs = 20,
+  batch_size = 128,
+  validation_split = 0.2
+)
+```
+
+
+
